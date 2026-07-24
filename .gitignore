@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+
+# Poetry
+poetry.toml
+
+# Claude Code local settings
+.claude/settings.local.json
+
+# Data — raw source CSVs are large and regenerated via `pipeline.py fetch`
+data/*.csv
+
+# OS
+.DS_Store
