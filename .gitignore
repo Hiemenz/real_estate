@@ -10,8 +10,10 @@ poetry.toml
 # Claude Code local settings
 .claude/settings.local.json
 
-# Data — raw source CSVs are large and regenerated via `pipeline.py fetch`
+# Data — raw source files are large and regenerated via `pipeline.py fetch`
 data/*.csv
+data/*.gz
+data/*.log
 
 # OS
 .DS_Store

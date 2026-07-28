@@ -1,0 +1,79 @@
+# Real Estate pipeline configuration.
+# Edit these values to retune scoring/clustering without touching pipeline.py.
+
+[data]
+dir = "data"
+
+[sources.zip_history]
+url = "https://econdata.s3-us-west-2.amazonaws.com/Reports/Core/RDC_Inventory_Core_Metrics_Zip_History.csv"
+filename = "RDC_Inventory_Core_Metrics_Zip_History.csv"
+required_columns = [
+    "postal_code", "zip_name", "month_date_yyyymm",
+    "median_listing_price", "median_listing_price_yy",
+    "active_listing_count", "active_listing_count_yy",
+    "median_days_on_market", "median_days_on_market_yy",
+    "pending_ratio", "price_reduced_share", "price_increased_share",
+]
+
+[sources.zip_current]
+url = "https://econdata.s3-us-west-2.amazonaws.com/Reports/Core/RDC_Inventory_Core_Metrics_Zip.csv"
+filename = "RDC_Inventory_Core_Metrics_Zip.csv"
+required_columns = ["postal_code", "zip_name", "median_listing_price"]
+
+[sources.county_history]
+url = "https://econdata.s3-us-west-2.amazonaws.com/Reports/Core/RDC_Inventory_Core_Metrics_County_History.csv"
+filename = "RDC_Inventory_Core_Metrics_County_History.csv"
+required_columns = [
+    "county_fips", "county_name", "month_date_yyyymm",
+    "median_listing_price", "median_listing_price_yy",
+    "active_listing_count", "active_listing_count_yy",
+    "median_days_on_market", "median_days_on_market_yy",
+    "pending_ratio", "price_reduced_share",
+]
+
+# Redfin's public Data Center bulk export (explicitly published for reuse,
+# same spirit as Realtor's econdata bucket above) — used as a second,
+# independent ZIP-level source alongside Realtor.com.
+# https://www.redfin.com/news/data-center/
+[sources.redfin_zip]
+url = "https://redfin-public-data.s3-us-west-2.amazonaws.com/redfin_market_tracker/zip_code_market_tracker.tsv000.gz"
+filename = "redfin_zip_code_market_tracker.tsv000.gz"
+sep = "\t"
+required_columns = [
+    "PERIOD_END", "PERIOD_DURATION", "REGION_TYPE", "REGION", "PROPERTY_TYPE",
+    "MEDIAN_SALE_PRICE", "MEDIAN_SALE_PRICE_YOY", "MEDIAN_DOM", "MEDIAN_DOM_YOY",
+    "INVENTORY", "INVENTORY_YOY", "SOLD_ABOVE_LIST", "AVG_SALE_TO_LIST",
+]
+
+# ─── Heat score feature weights ────────────────────────────────────────────
+# positive weight = higher value -> hotter market
+# negative weight = higher value -> cooler market
+[heat_weights]
+median_listing_price_yy = 1.5
+median_days_on_market_yy = -1.0
+pending_ratio = 1.2
+price_reduced_share = -1.0
+active_listing_count_yy = -0.5
+
+# Redfin equivalent of heat_weights above — separate table because Redfin's
+# column names/semantics differ from Realtor's (e.g. SOLD_ABOVE_LIST as a
+# demand signal in place of pending_ratio).
+[redfin_heat_weights]
+median_sale_price_yoy = 1.5
+median_dom_yoy = -1.0
+sold_above_list = 1.2
+avg_sale_to_list = 1.0
+inventory_yoy = -0.5
+
+[clusters]
+n_clusters = 5
+labels = { "0" = "Hot", "1" = "Rising", "2" = "Balanced", "3" = "Cooling", "4" = "Soft" }
+# features used for KMeans, distinct from (but often overlapping) heat_weights
+features = ["median_listing_price_yy", "pending_ratio", "price_reduced_share"]
+
+[forecast]
+default_top_n = 30
+default_periods = 12
+min_history_months = 12
+changepoint_prior_scale = 0.15
+interval_width = 0.90

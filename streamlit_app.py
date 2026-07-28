@@ -1,3 +1,5 @@
+import json
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -6,9 +8,9 @@ import pandas as pd
 import streamlit as st
 import altair as alt
 
-st.set_page_config(page_title="Real Estate Analytics", layout="wide", page_icon="🏠")
+from pipeline import DATA_DIR, FETCH_META_PATH, _parse_period, run_prophet
 
-DATA_DIR = Path("data")
+st.set_page_config(page_title="Real Estate Analytics", layout="wide", page_icon="🏠")
 
 
 # ─── Data loaders ────────────────────────────────────────────────────────────
@@ -17,15 +19,39 @@ DATA_DIR = Path("data")
 def load_zip_history(path: str) -> pd.DataFrame:
     df = pd.read_csv(path, dtype={"postal_code": str}, low_memory=False)
     df["_zip"] = df["postal_code"].str.zfill(5)
-    s = df["month_date_yyyymm"].astype(str).str.replace(r"\.0$", "", regex=True)
-    df["_period"] = pd.to_datetime(s + "01", format="%Y%m%d", errors="coerce")
+    df["_period"] = _parse_period(df)
     df = df.sort_values(["_zip", "_period"]).reset_index(drop=True)
     return df
 
 
 @st.cache_data(show_spinner=False)
+def load_county_history(path: str) -> Optional[pd.DataFrame]:
+    if not Path(path).exists():
+        return None
+    df = pd.read_csv(path, dtype={"county_fips": str}, low_memory=False)
+    df["_period"] = _parse_period(df)
+    return df.sort_values(["county_fips", "_period"]).reset_index(drop=True)
+
+
+@st.cache_data(show_spinner=False)
 def load_market_scores() -> Optional[pd.DataFrame]:
     p = DATA_DIR / "market_scores.parquet"
+    if not p.exists():
+        return None
+    return pd.read_parquet(p)
+
+
+@st.cache_data(show_spinner=False)
+def load_county_scores() -> Optional[pd.DataFrame]:
+    p = DATA_DIR / "county_scores.parquet"
+    if not p.exists():
+        return None
+    return pd.read_parquet(p)
+
+
+@st.cache_data(show_spinner=False)
+def load_redfin_scores() -> Optional[pd.DataFrame]:
+    p = DATA_DIR / "redfin_zip_scores.parquet"
     if not p.exists():
         return None
     return pd.read_parquet(p)
@@ -42,17 +68,22 @@ def load_forecasts() -> Optional[pd.DataFrame]:
 
 
 def _run_prophet(series: pd.DataFrame, periods: int = 12) -> pd.DataFrame:
-    from prophet import Prophet
-    m = Prophet(
-        yearly_seasonality=True,
-        weekly_seasonality=False,
-        daily_seasonality=False,
-        changepoint_prior_scale=0.15,
-        interval_width=0.90,
-    )
-    m.fit(series)
-    future = m.make_future_dataframe(periods=periods, freq="MS")
-    return m.predict(future)
+    return run_prophet(series, periods=periods)
+
+
+def _fetch_freshness() -> list[str]:
+    """Human-readable 'source: age' lines from fetch_meta.json, newest info first."""
+    if not FETCH_META_PATH.exists():
+        return []
+    meta = json.loads(FETCH_META_PATH.read_text())
+    lines = []
+    now = datetime.now(timezone.utc)
+    for name, iso_ts in sorted(meta.items()):
+        fetched_at = datetime.fromisoformat(iso_ts)
+        age_days = (now - fetched_at).days
+        age_label = "today" if age_days == 0 else f"{age_days}d ago"
+        lines.append(f"{name}: {fetched_at:%Y-%m-%d} ({age_label})")
+    return lines
 
 
 def _pipeline_hint(cmd: str) -> None:
@@ -74,9 +105,26 @@ if not Path(zip_history_path).exists():
 with st.spinner("Loading ZIP history …"):
     df = load_zip_history(zip_history_path)
 
+county_history_path = str(DATA_DIR / "RDC_Inventory_Core_Metrics_County_History.csv")
+
+# ─── Sidebar: data freshness ─────────────────────────────────────────────────
+
+with st.sidebar:
+    st.subheader("Data freshness")
+    st.caption(f"Data through **{df['_period'].max():%Y-%m}**")
+    fetch_lines = _fetch_freshness()
+    if fetch_lines:
+        for line in fetch_lines:
+            st.caption(line)
+    else:
+        st.caption("No fetch timestamps recorded yet.")
+
 # ─── Tabs ────────────────────────────────────────────────────────────────────
 
-tab1, tab2, tab3 = st.tabs(["📍 ZIP Deep Dive", "🔥 Market Mining", "📈 Batch Forecasts"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs(
+    ["📍 ZIP Deep Dive", "🔥 Market Mining", "📈 Batch Forecasts", "🗺️ County Overview",
+     "🔄 Provider Comparison"]
+)
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -582,3 +630,185 @@ with tab3:
             }).background_gradient(subset=["Change (%)"], cmap="RdYlGn"),
             use_container_width=True,
         )
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# TAB 4 — County Overview
+# ════════════════════════════════════════════════════════════════════════════
+
+with tab4:
+    st.header("County Overview")
+    county_scores = load_county_scores()
+
+    if county_scores is None:
+        _pipeline_hint("mine")
+        st.stop()
+
+    county_scores = county_scores.copy()
+    top_n_c = st.slider("Show top N counties", 10, 100, 25, key="county_top_n")
+
+    top_counties = county_scores.dropna(subset=["heat_score"]).nlargest(top_n_c, "heat_score").copy()
+    top_counties["label"] = top_counties["county_name"].fillna(top_counties["county_fips"])
+
+    st.subheader(f"Top {top_n_c} hottest counties")
+    county_bar = (
+        alt.Chart(top_counties)
+        .mark_bar()
+        .encode(
+            x=alt.X("heat_score:Q", title="Heat Score (0–100)"),
+            y=alt.Y("label:N", sort="-x", title=None),
+            color=alt.Color("heat_score:Q", scale=alt.Scale(scheme="reds"), legend=None),
+            tooltip=[
+                alt.Tooltip("county_name:N", title="County"),
+                alt.Tooltip("heat_score:Q", format=".1f", title="Heat Score"),
+                alt.Tooltip("median_listing_price:Q", format=",.0f", title="Median Price ($)"),
+                alt.Tooltip("median_listing_price_yy:Q", format=".1%", title="Price YoY"),
+                alt.Tooltip("median_days_on_market:Q", format=".0f", title="Days on Market"),
+            ],
+        )
+        .properties(height=max(300, top_n_c * 22))
+    )
+    st.altair_chart(county_bar, use_container_width=True)
+
+    st.subheader("County price trend")
+
+    county_history = load_county_history(county_history_path)
+    if county_history is None:
+        st.info(
+            "County history CSV not found — run `poetry run python pipeline.py fetch` "
+            "to enable the trend chart below."
+        )
+    else:
+        county_options = (
+            county_scores[["county_fips", "county_name"]]
+            .dropna(subset=["county_name"])
+            .drop_duplicates()
+            .sort_values("county_name")
+        )
+        label_to_fips = dict(zip(county_options["county_name"], county_options["county_fips"]))
+        default_county = top_counties["county_name"].iloc[0] if len(top_counties) else None
+        options = county_options["county_name"].tolist()
+        default_idx = options.index(default_county) if default_county in options else 0
+        selected_county = st.selectbox("County", options=options, index=default_idx)
+        selected_fips = label_to_fips[selected_county]
+
+        trend = (
+            county_history[county_history["county_fips"] == selected_fips][
+                ["_period", "median_listing_price"]
+            ]
+            .dropna()
+            .sort_values("_period")
+        )
+        if trend.empty:
+            st.info("No price history for this county.")
+        else:
+            trend_chart = (
+                alt.Chart(trend)
+                .mark_line(point=True)
+                .encode(
+                    x=alt.X("_period:T", title="Month"),
+                    y=alt.Y("median_listing_price:Q", title="Median Listing Price ($)"),
+                    tooltip=[
+                        alt.Tooltip("_period:T", title="Month"),
+                        alt.Tooltip("median_listing_price:Q", format=",.0f", title="Median Price"),
+                    ],
+                )
+                .properties(title=selected_county)
+                .interactive()
+            )
+            st.altair_chart(trend_chart, use_container_width=True)
+
+    with st.expander("Full county scores table"):
+        display_cols = [c for c in [
+            "county_fips", "county_name", "heat_score",
+            "median_listing_price", "median_listing_price_yy",
+            "median_days_on_market", "pending_ratio", "price_reduced_share",
+        ] if c in county_scores.columns]
+        st.dataframe(
+            county_scores.dropna(subset=["heat_score"]).nlargest(500, "heat_score")[display_cols]
+            .style.format({
+                "heat_score": "{:.1f}",
+                "median_listing_price": "{:,.0f}",
+                "median_listing_price_yy": "{:.1%}",
+                "median_days_on_market": "{:.0f}",
+                "pending_ratio": "{:.3f}",
+                "price_reduced_share": "{:.3f}",
+            }),
+            use_container_width=True,
+        )
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# TAB 5 — Provider Comparison
+# ════════════════════════════════════════════════════════════════════════════
+
+with tab5:
+    st.header("Provider Comparison — Realtor.com vs. Redfin")
+    st.caption(
+        "Two independently-sourced heat scores for the same ZIPs, both 0–100. "
+        "Realtor.com's score weighs price growth, days on market, pending ratio, "
+        "price reductions, and active listings. Redfin's weighs price growth, "
+        "days on market, sold-above-list share, sale-to-list ratio, and inventory. "
+        "Different inputs, so agreement between them is a stronger signal than "
+        "either alone — and divergence is worth a second look."
+    )
+
+    realtor_scores = load_market_scores()
+    redfin_scores = load_redfin_scores()
+
+    if realtor_scores is None or redfin_scores is None:
+        _pipeline_hint("mine")
+        st.stop()
+
+    merged = (
+        realtor_scores[["_zip", "zip_name", "heat_score", "cluster_label"]]
+        .rename(columns={"heat_score": "heat_score_realtor"})
+        .merge(
+            redfin_scores[["_zip", "heat_score"]].rename(columns={"heat_score": "heat_score_redfin"}),
+            on="_zip", how="inner",
+        )
+        .dropna(subset=["heat_score_realtor", "heat_score_redfin"])
+    )
+
+    if merged.empty:
+        st.info("No overlapping ZIPs with a heat score from both providers yet.")
+        st.stop()
+
+    corr = merged["heat_score_realtor"].corr(merged["heat_score_redfin"])
+    c1, c2 = st.columns(2)
+    c1.metric("ZIPs scored by both providers", f"{len(merged):,}")
+    c2.metric("Correlation (Realtor vs. Redfin)", f"{corr:.2f}")
+
+    st.subheader("Agreement scatter")
+    scatter = (
+        alt.Chart(merged)
+        .mark_circle(size=40, opacity=0.4)
+        .encode(
+            x=alt.X("heat_score_realtor:Q", title="Realtor.com Heat Score"),
+            y=alt.Y("heat_score_redfin:Q", title="Redfin Heat Score"),
+            color=alt.Color("cluster_label:N", title="Realtor Cluster"),
+            tooltip=[
+                alt.Tooltip("_zip:N", title="ZIP"),
+                alt.Tooltip("zip_name:N", title="Name"),
+                alt.Tooltip("heat_score_realtor:Q", format=".1f", title="Realtor Score"),
+                alt.Tooltip("heat_score_redfin:Q", format=".1f", title="Redfin Score"),
+            ],
+        )
+        .properties(height=450)
+        .interactive()
+    )
+    st.altair_chart(scatter, use_container_width=True)
+
+    st.subheader("Biggest disagreements")
+    st.caption("ZIPs where the two providers' scores diverge most — worth a manual look.")
+    merged["score_diff"] = merged["heat_score_redfin"] - merged["heat_score_realtor"]
+    disagree = merged.reindex(merged["score_diff"].abs().sort_values(ascending=False).index).head(25)
+    st.dataframe(
+        disagree[["_zip", "zip_name", "heat_score_realtor", "heat_score_redfin", "score_diff"]]
+        .style.format({
+            "heat_score_realtor": "{:.1f}",
+            "heat_score_redfin": "{:.1f}",
+            "score_diff": "{:+.1f}",
+        }).background_gradient(subset=["score_diff"], cmap="RdYlGn"),
+        use_container_width=True,
+    )
