@@ -1,0 +1,54 @@
+name: Rebuild Dashboard
+
+on:
+  schedule:
+    - cron: '0 8 * * 0'   # Every Sunday at 8am UTC
+  workflow_dispatch:        # Enable manual runs from the GitHub Actions tab
+
+permissions:
+  contents: write
+
+jobs:
+  rebuild:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install Poetry
+        run: pip install poetry
+
+      - name: Cache Poetry virtualenv
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pypoetry
+          key: poetry-${{ runner.os }}-${{ hashFiles('pyproject.toml') }}
+
+      - name: Install dependencies
+        run: poetry install --no-root
+
+      - name: Run pipeline
+        run: poetry run python pipeline.py all
+
+      - name: Publish to docs/
+        run: |
+          mkdir -p docs
+          cp data/dashboard.html docs/index.html
+
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add docs/index.html \
+                  data/market_scores.parquet \
+                  data/county_scores.parquet \
+                  data/redfin_zip_scores.parquet \
+                  data/forecasts.parquet \
+                  data/fetch_meta.json \
+                  data/mine_meta.json
+          git diff --cached --quiet || git commit -m "chore: rebuild dashboard $(date -u +%Y-%m-%d)"
+          git push
