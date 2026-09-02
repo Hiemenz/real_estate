@@ -77,3 +77,95 @@ default_periods = 12
 min_history_months = 12
 changepoint_prior_scale = 0.15
 interval_width = 0.90
+
+# ─── Fetch change detection ────────────────────────────────────────────────
+# The bulk sources above are monthly publications served from S3, which expose
+# both ETag and Last-Modified. Polling those headers costs ~1 KB, so the daily
+# job can check every source and download only the ones that actually changed
+# instead of re-pulling ~2.4 GB on every run.
+[fetch]
+# Where the last-seen ETag/Last-Modified/size per source is recorded.
+state_file = "fetch_state.json"
+head_timeout = 30
+download_timeout = 900
+# Re-download when the server sends no validators at all (can't prove freshness).
+fetch_when_unverifiable = true
+
+# ─── Alerting ──────────────────────────────────────────────────────────────
+# A failed run used to be visible only in data/pipeline.log, which is why four
+# consecutive cron failures went unnoticed for five weeks. Set a channel here.
+[alerts]
+# "none" | "ntfy" | "webhook" | "command"
+channel = "none"
+# ntfy: public topic-based push (https://ntfy.sh) — set to your own topic.
+ntfy_topic = ""
+ntfy_server = "https://ntfy.sh"
+# webhook: any URL accepting a JSON POST of {title, message, level}.
+webhook_url = ""
+# command: shell command receiving the message on stdin.
+command = ""
+notify_on_success = false
+
+# ─── FRED macro series ─────────────────────────────────────────────────────
+# Keyless CSV endpoint (fredgraph.csv). These are the only genuinely
+# daily-cadence inputs in the project — housing bulk data is monthly — and
+# rates are the dominant driver of the demand signals scored above.
+[fred]
+base_url = "https://fred.stlouisfed.org/graph/fredgraph.csv"
+timeout = 60
+filename = "fred_series.parquet"
+
+# id = { label, freq, units } — freq is documentation, not a fetch parameter.
+[fred.series]
+DGS10        = { label = "10-Year Treasury",            freq = "daily",     units = "percent" }
+DGS30        = { label = "30-Year Treasury",            freq = "daily",     units = "percent" }
+DFF          = { label = "Effective Fed Funds Rate",    freq = "daily",     units = "percent" }
+T10Y2Y       = { label = "10Y-2Y Treasury Spread",      freq = "daily",     units = "percent" }
+MORTGAGE30US = { label = "30-Year Fixed Mortgage",      freq = "weekly",    units = "percent" }
+MORTGAGE15US = { label = "15-Year Fixed Mortgage",      freq = "weekly",    units = "percent" }
+FEDFUNDS     = { label = "Fed Funds Rate",              freq = "monthly",   units = "percent" }
+CSUSHPINSA   = { label = "Case-Shiller Home Price Idx", freq = "monthly",   units = "index" }
+HOUST        = { label = "Housing Starts",              freq = "monthly",   units = "thousands" }
+PERMIT       = { label = "Building Permits",            freq = "monthly",   units = "thousands" }
+COMPUTSA     = { label = "Housing Completions",         freq = "monthly",   units = "thousands" }
+HSN1F        = { label = "New One-Family Homes Sold",   freq = "monthly",   units = "thousands" }
+MSACSR       = { label = "Monthly Supply of New Homes", freq = "monthly",   units = "months" }
+UMCSENT      = { label = "Consumer Sentiment",          freq = "monthly",   units = "index" }
+UNRATE       = { label = "Unemployment Rate",           freq = "monthly",   units = "percent" }
+CPIAUCSL     = { label = "CPI (All Urban)",             freq = "monthly",   units = "index" }
+MSPUS        = { label = "Median Sales Price (US)",     freq = "quarterly", units = "usd" }
+RRVRUSQ156N  = { label = "Rental Vacancy Rate",         freq = "quarterly", units = "percent" }
+
+# ─── Score history ─────────────────────────────────────────────────────────
+# Append-only snapshots so heat can be tracked over time and momentum derived.
+#
+# IMPORTANT: heat_score is min-max normalized against the population of a single
+# run, so a ZIP's score can move purely because *other* ZIPs moved. Snapshotting
+# the score alone would make cross-run deltas meaningless. We therefore persist
+# the raw (pre-normalization) features and recompute comparably at read time.
+[history]
+filename = "score_history.parquet"
+# Raw feature columns carried into every snapshot, alongside heat_score.
+zip_columns = [
+    "median_listing_price", "median_listing_price_yy",
+    "active_listing_count", "active_listing_count_yy",
+    "median_days_on_market", "median_days_on_market_yy",
+    "pending_ratio", "price_reduced_share",
+]
+# Snapshots are keyed by the source data month, not the run date: re-running the
+# pipeline on unchanged data must not create a duplicate/phantom observation.
+max_snapshots = 120
+
+# ─── Forecast backtesting ──────────────────────────────────────────────────
+# Hold out the most recent N months, forecast them, and score against actuals.
+# Without this the Prophet output has no accuracy measurement attached to it.
+[backtest]
+filename = "backtest.parquet"
+horizon_months = 6
+min_history_months = 30
+default_top_n = 30
+# A held-out month with an actual price below this is treated as a data glitch
+# (e.g. a literal "$1" placeholder seen in Realtor.com's feed) and excluded
+# from MAPE rather than scored — otherwise one such row can register as a
+# multi-million-percent error and swamp every real number in the summary.
+min_plausible_price = 10000

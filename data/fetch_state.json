@@ -1,0 +1,26 @@
+{
+  "county_history": {
+    "content_length": "101386516",
+    "etag": "\"a60f32e2eb598dddb218c1dda9de0d52-6\"",
+    "fetched_at": "2026-09-02T13:50:35.043329+00:00",
+    "last_modified": "Tue, 04 Aug 2026 15:54:11 GMT"
+  },
+  "redfin_zip": {
+    "content_length": "1548403907",
+    "etag": "\"c173c1aa75ba093b643a05079085b333\"",
+    "fetched_at": "2026-09-02T13:51:27.420538+00:00",
+    "last_modified": "Tue, 02 Jun 2026 18:19:04 GMT"
+  },
+  "zip_current": {
+    "content_length": "7431734",
+    "etag": "\"e28b7bf4b7787f9635d3b90b11c8d8e7\"",
+    "fetched_at": "2026-09-02T13:50:29.307606+00:00",
+    "last_modified": "Tue, 04 Aug 2026 15:54:17 GMT"
+  },
+  "zip_history": {
+    "content_length": "822067599",
+    "etag": "\"8cc18e8bdfae68d1fe310d3581916331-48\"",
+    "fetched_at": "2026-09-02T13:50:27.941383+00:00",
+    "last_modified": "Tue, 04 Aug 2026 15:54:12 GMT"
+  }
+}

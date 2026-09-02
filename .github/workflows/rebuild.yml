@@ -2,6 +2,12 @@ name: Rebuild Dashboard
 
 on:
   schedule:
+    # Weekly, not daily: this runner starts from a clean checkout every time, so
+    # it has no local copy of the ~2.4 GB raw sources to compare ETags against —
+    # fetch's change detection (see fetching.py) can't skip anything here, it
+    # always re-downloads. The Pi's own cron (scripts/daily_update.sh) runs
+    # daily against a persistent local checkout, where that skip actually pays
+    # off; this job exists as the public GitHub Pages mirror.
     - cron: '0 8 * * 0'   # Every Sunday at 8am UTC
   workflow_dispatch:        # Enable manual runs from the GitHub Actions tab
 
@@ -48,7 +54,11 @@ jobs:
                   data/county_scores.parquet \
                   data/redfin_zip_scores.parquet \
                   data/forecasts.parquet \
+                  data/backtest.parquet \
+                  data/fred_series.parquet \
+                  data/score_history.parquet \
                   data/fetch_meta.json \
+                  data/fetch_state.json \
                   data/mine_meta.json
           git diff --cached --quiet || git commit -m "chore: rebuild dashboard $(date -u +%Y-%m-%d)"
           git push

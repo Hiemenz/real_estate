@@ -17,6 +17,9 @@ from pathlib import Path
 
 import pandas as pd
 
+import fred as fred_mod
+import history as history_mod
+
 # ─── Palette (validated categorical order — see dataviz skill references/palette.md) ─
 CATEGORICAL = {
     "light": ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#4a3aa7", "#e34948"],
@@ -57,6 +60,29 @@ def _fmt_compact(n: int) -> str:
     if n >= 1_000:
         return f"{n / 1_000:.1f}K"
     return str(n)
+
+
+def _fmt_fred_value(value: float, units: str) -> str:
+    if pd.isna(value):
+        return "—"
+    if units == "percent":
+        return f"{value:.2f}%"
+    if units == "usd":
+        return f"${value:,.0f}"
+    if units == "index":
+        return f"{value:,.1f}"
+    return f"{value:,.0f}"
+
+
+def _fmt_fred_change(value, units: str) -> str:
+    if value is None or pd.isna(value):
+        return ""
+    sign = "+" if value >= 0 else ""
+    if units == "percent":
+        return f"{sign}{value:.2f}pp vs 1y ago"
+    if units == "usd":
+        return f"{sign}${value:,.0f} vs 1y ago"
+    return f"{sign}{value:,.1f} vs 1y ago"
 
 
 # ─── Stat tiles ───────────────────────────────────────────────────────────────
@@ -460,6 +486,23 @@ def build_dashboard(data_dir: Path, out_path: Path) -> None:
     if fetch_meta_path.exists():
         fetch_meta = json.loads(fetch_meta_path.read_text())
 
+    fred_latest = None
+    fred_path = data_dir / "fred_series.parquet"
+    if fred_path.exists():
+        fred_df = pd.read_parquet(fred_path)
+        fred_latest = fred_mod.latest_values(fred_df)
+
+    history_df = None
+    history_path = data_dir / "score_history.parquet"
+    if history_path.exists():
+        history_df = pd.read_parquet(history_path)
+
+    backtest_summary = None
+    backtest_path = data_dir / "backtest.parquet"
+    if backtest_path.exists():
+        from backtest import summarize as summarize_backtest
+        backtest_summary = summarize_backtest(pd.read_parquet(backtest_path))
+
     scored = scores.dropna(subset=["heat_score"]).copy()
     scored["state"] = scored["zip_name"].fillna("").apply(
         lambda s: s.split(", ")[-1].strip() if ", " in s else None
@@ -513,6 +556,78 @@ def build_dashboard(data_dir: Path, out_path: Path) -> None:
         forecast_section = forecast_line_chart(
             forecasts[forecasts["_zip"].isin(top5)], zip_labels, CATEGORICAL["light"]
         )
+
+    # ── Macro conditions (FRED) ────────────────────────────────────────────
+    macro_section = ""
+    if fred_latest is not None and len(fred_latest):
+        # A curated subset of the fetched series — the full set is in fred_series.parquet.
+        headline_ids = ["MORTGAGE30US", "DGS10", "FEDFUNDS", "UNRATE", "HOUST", "CSUSHPINSA"]
+        by_id = fred_latest.set_index("series_id")
+        macro_tiles = []
+        for sid in headline_ids:
+            if sid not in by_id.index:
+                continue
+            r = by_id.loc[sid]
+            macro_tiles.append(stat_tile(
+                r["label"],
+                _fmt_fred_value(r["value"], r["units"]),
+                f"{_fmt_fred_change(r['change_1y'], r['units'])} · as of {r['date']:%Y-%m-%d}",
+            ))
+        if macro_tiles:
+            macro_section = f'<div class="tiles">{"".join(macro_tiles)}</div>'
+
+    macro_html = (
+        f"""
+    <section>
+      <h2>Macro conditions</h2>
+      <p class="section-sub">FRED series, refreshed daily — the only genuinely daily-cadence inputs to this dashboard (housing bulk data is monthly).</p>
+      {macro_section}
+    </section>""" if macro_section else ""
+    )
+
+    # ── Momentum (biggest heat-score movers) ───────────────────────────────
+    momentum_html = ""
+    if history_df is not None:
+        from pipeline import compute_heat_scores as _compute_heat_scores, HEAT_WEIGHTS as _HEAT_WEIGHTS, HISTORY_CFG as _HISTORY_CFG
+
+        movers, prev_date, latest_date = history_mod.compute_momentum(
+            history_df, _HISTORY_CFG["zip_columns"], _HEAT_WEIGHTS, _compute_heat_scores,
+        )
+        if not movers.empty:
+            movers = movers.copy()
+            movers["delta_fmt"] = movers["delta"].round(1)
+            movers["heat_score_prev"] = movers["heat_score_prev"].round(1)
+            movers["heat_score_latest"] = movers["heat_score_latest"].round(1)
+            top_movers = pd.concat([movers.head(15), movers.tail(15)]).drop_duplicates(subset="_zip")
+            mover_cols = [
+                ("_zip", "ZIP"), ("zip_name", "Market"),
+                ("heat_score_prev", "Heat (prev)"), ("heat_score_latest", "Heat (latest)"),
+                ("delta_fmt", "Δ"),
+            ]
+            mover_cols = [(c, h) for c, h in mover_cols if c in top_movers.columns]
+            momentum_table = data_table(top_movers, mover_cols, "momentum-table", "Filter by ZIP or market…")
+            momentum_html = f"""
+    <section>
+      <h2>Biggest movers</h2>
+      <p class="section-sub">Heat score change from {prev_date:%Y-%m} to {latest_date:%Y-%m}, recomputed on a shared normalization basis so the two periods are comparable (see history.py).</p>
+      {momentum_table}
+    </section>"""
+
+    # ── Forecast accuracy (backtest) ───────────────────────────────────────
+    backtest_html = ""
+    if backtest_summary is not None and len(backtest_summary):
+        from pipeline import BACKTEST_CFG as _BACKTEST_CFG
+
+        bt = backtest_summary.copy()
+        bt["mape_pct"] = bt["mape_pct"].round(1)
+        bt_cols = [("_zip", "ZIP"), ("mape_pct", "MAPE %"), ("months_tested", "Months held out")]
+        bt_table = data_table(bt, bt_cols, "backtest-table", "Filter by ZIP…")
+        backtest_html = f"""
+    <section>
+      <h2>Forecast accuracy</h2>
+      <p class="section-sub">Held-out backtest: median MAPE {bt['mape_pct'].median():.1f}% across {len(bt)} ZIPs — how far Prophet's predictions were from what actually happened, over the {_BACKTEST_CFG['horizon_months']}-month holdout window.</p>
+      {bt_table}
+    </section>"""
 
     # ── County section ─────────────────────────────────────────────────────
     county_section = ""
@@ -600,14 +715,18 @@ def build_dashboard(data_dir: Path, out_path: Path) -> None:
 
   <div class="tiles">{''.join(tiles)}</div>
 
+  {macro_html}
+
   <section>
     <h2>Top 25 hottest ZIPs</h2>
     <p class="section-sub">Weighted heat score (0–100) from price growth, days on market, pending ratio, price reductions, and supply.</p>
     {top_zip_chart}
   </section>
 
+  {momentum_html}
   {cluster_html}
   {forecast_html}
+  {backtest_html}
   {county_html}
 
   <section>

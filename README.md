@@ -6,21 +6,33 @@ forecasting where prices are headed.
 
 ## What it does
 
-1. **Fetch** — downloads the latest ZIP/county inventory data from Realtor.com's
-   public research bucket and Redfin's Data Center export (both updated monthly).
-2. **Mine** — computes a weighted "heat score" per ZIP (price growth, days on
+1. **Fetch** — change-detected download of the latest ZIP/county inventory
+   data from Realtor.com's public research bucket and Redfin's Data Center
+   export (both republished monthly). Each source is HEAD-probed for its
+   ETag/Last-Modified before downloading, so a daily run costs a handful of
+   HTTP HEAD requests on days nothing changed instead of re-pulling ~2.4 GB.
+2. **FRED** — pulls daily/weekly/monthly macro series (mortgage & Treasury
+   rates, Fed funds, CPI, unemployment, housing starts/permits, Case-Shiller)
+   from FRED's keyless CSV endpoint — the only genuinely daily-cadence inputs
+   in the project, since the housing bulk sources are monthly.
+3. **Mine** — computes a weighted "heat score" per ZIP (price growth, days on
    market, pending ratio, price reductions, etc.), clusters ZIPs with KMeans,
-   rolls prices up to the county level, and derives an independent Redfin-based
-   heat score as a cross-check on the Realtor.com numbers.
-3. **Forecast** — runs Prophet time-series forecasts (12-month horizon) for the
-   hottest ZIPs.
-4. **Report** — renders a static, self-contained `data/dashboard.html` (no
-   server, no CDN dependency) summarizing the above.
-5. **Explore** — a Streamlit app for digging into individual ZIPs, browsing
+   rolls prices up to the county level, derives an independent Redfin-based
+   heat score as a cross-check on the Realtor.com numbers, and appends a
+   dated snapshot to `score_history.parquet` for tracking momentum over time.
+4. **Forecast** — runs Prophet time-series forecasts (12-month horizon) for
+   the hottest ZIPs.
+5. **Backtest** — holds out the last few months of each hot ZIP's history,
+   forecasts them, and scores the result (MAPE) against what actually
+   happened — so the forecast carries an accuracy number instead of just a
+   line on a chart.
+6. **Report** — renders a static, self-contained `data/dashboard.html` (no
+   server, no CDN dependency) summarizing all of the above.
+7. **Explore** — a Streamlit app for digging into individual ZIPs, browsing
    market-mining results, comparing providers, and viewing batch forecasts.
 
-Weights, cluster count, source URLs, and forecast parameters are tunable in
-`config.toml` without touching `pipeline.py`.
+Weights, cluster count, source URLs, FRED series, alert channel, and forecast
+parameters are all tunable in `config.toml` without touching the code.
 
 ## Setup
 
@@ -35,12 +47,22 @@ poetry install
 Run the pipeline (outputs land in `data/`):
 
 ```bash
-poetry run python pipeline.py fetch                 # download source files (Realtor.com + Redfin)
-poetry run python pipeline.py mine [--lookback N]    # compute heat scores, clusters & county/Redfin rollups
-poetry run python pipeline.py forecast [--top N]     # Prophet forecasts for top N ZIPs
-poetry run python pipeline.py report                 # render data/dashboard.html
-poetry run python pipeline.py all [--top N]          # run fetch + mine + forecast + report
+poetry run python pipeline.py fetch [--force]        # change-detected download (Realtor.com + Redfin)
+poetry run python pipeline.py fred                   # fetch FRED macro series
+poetry run python pipeline.py mine [--lookback N]     # heat scores, clusters, county/Redfin rollups, history snapshot
+poetry run python pipeline.py history                 # report biggest heat-score movers since last snapshot
+poetry run python pipeline.py forecast [--top N]      # Prophet forecasts for top N ZIPs
+poetry run python pipeline.py backtest [--top N]      # held-out forecast accuracy (MAPE)
+poetry run python pipeline.py report                  # render data/dashboard.html
+poetry run python pipeline.py all [--top N]           # fetch + fred + (mine+forecast+backtest if changed) + report
 ```
+
+`all` is safe to run daily: `fetch` only re-downloads a source whose
+ETag/Last-Modified actually changed, and the mine/forecast/backtest steps are
+skipped on days where nothing new landed (the report still re-renders daily
+to pick up fresh FRED rates). A failed run is pushed to whichever channel is
+configured in `config.toml`'s `[alerts]` (ntfy, a webhook, or an arbitrary
+shell command) before the process exits non-zero.
 
 Launch the interactive dashboard:
 
@@ -48,8 +70,11 @@ Launch the interactive dashboard:
 poetry run streamlit run streamlit_app.py
 ```
 
-For a recurring monthly refresh, `scripts/monthly_update.sh` runs `pipeline.py
-all --force` under a flock (safe to put on a cron schedule).
+For a recurring refresh, `scripts/daily_update.sh` runs `pipeline.py all`
+under a flock (already installed as a daily cron job on this machine —
+`crontab -l` to check). It invokes the project's `.venv/bin/python` directly
+rather than `poetry`, since cron's non-interactive `PATH` doesn't include
+`~/.local/bin`.
 
 ## Output files (in `data/`)
 
@@ -58,22 +83,66 @@ market_scores.parquet      Realtor.com heat score + cluster per ZIP
 county_scores.parquet      county-level rollup (price levels & YoY trend)
 redfin_zip_scores.parquet  independent Redfin-derived heat score per ZIP
 forecasts.parquet          12-month Prophet forecasts for top ZIPs
+backtest.parquet           held-out actual vs. forecast, per ZIP/month (accuracy check)
+score_history.parquet      append-only heat-score snapshots, for momentum tracking
+fred_series.parquet        daily/weekly/monthly macro series (rates, starts, permits, ...)
 fetch_meta.json            per-source fetch timestamps (freshness indicator)
-mine_meta.json             data-through date / lookback used for the last mine run
+fetch_state.json           per-source ETag/Last-Modified, used for change detection
+mine_meta.json              data-through date / lookback used for the last mine run
 dashboard.html             static HTML report generated by dashboard.py
 ```
 
 Raw source downloads (`*.csv`, `*.gz`) and logs are gitignored and regenerated
 via `pipeline.py fetch`; the derived outputs above are committed as a snapshot.
 
+## Score history & momentum
+
+`heat_score` is min-max normalized against the population of a single `mine`
+run, so a ZIP's score can shift purely because *other* ZIPs shifted that
+month — not because that ZIP itself changed. `score_history.parquet` therefore
+stores the raw, pre-normalization features every run, and `pipeline.py
+history` (or the dashboard's "Biggest movers" section) recomputes heat_score
+jointly over the two periods being compared, so the resulting delta reflects
+real relative movement rather than the normalization frame shifting under it.
+See `history.py`'s module docstring for the full rationale.
+
+## Alerting
+
+Four consecutive monthly cron runs failed silently in August 2026 (`poetry:
+command not found` — cron's `PATH` doesn't include `~/.local/bin`) before
+anyone noticed, leaving the dashboard five weeks stale. `notify.py` pushes a
+message to the channel configured in `config.toml`'s `[alerts]` — `ntfy`
+(push notification, no signup), a `webhook` (JSON POST), or an arbitrary
+shell `command` — whenever `pipeline.py all` fails, and optionally on success
+too (`notify_on_success`).
+
+## Testing
+
+```bash
+poetry run pytest
+```
+
+Covers the pure logic: heat-score weighting/winsorizing and cluster ranking
+(`pipeline.py`), fetch change-detection (`fetching.py`), history snapshotting
+and cross-period momentum (`history.py`), backtest holdout/MAPE scoring
+including the near-zero-price data-glitch guard (`backtest.py`), and FRED CSV
+parsing (`fred.py`).
+
 ## Project layout
 
 ```
-pipeline.py          fetch → mine → forecast → report CLI
-dashboard.py          static HTML report generator (inline SVG, no dependencies)
-streamlit_app.py      interactive dashboard (ZIP deep dive, market mining, county overview,
-                       provider comparison, batch forecasts)
-config.toml            source URLs, heat-score weights, cluster settings, forecast params
-scripts/               operational scripts (e.g. monthly_update.sh for cron)
-data/                  source files (gitignored, fetched via pipeline.py) and generated outputs
+pipeline.py     fetch → fred → mine → forecast → backtest → report CLI (also: history)
+fetching.py     change-detected download (ETag/Last-Modified HEAD probing)
+fred.py         FRED macro series ingestion
+history.py      append-only heat-score snapshots + cross-period momentum
+backtest.py     held-out forecast accuracy (MAPE)
+notify.py       failure/success alerting (ntfy / webhook / shell command)
+dashboard.py    static HTML report generator (inline SVG, no dependencies)
+streamlit_app.py  interactive dashboard (ZIP deep dive, market mining, county overview,
+                  provider comparison, batch forecasts)
+config.toml     source URLs, heat-score weights, cluster settings, FRED series,
+                alert channel, forecast/backtest params
+scripts/        operational scripts (daily_update.sh for cron)
+tests/          pytest suite for the pure logic in the modules above
+data/           source files (gitignored, fetched via pipeline.py) and generated outputs
 ```

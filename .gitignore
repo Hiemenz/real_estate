@@ -15,5 +15,9 @@ data/*.csv
 data/*.gz
 data/*.log
 
+# Local-only config overrides (e.g. a real ntfy topic / webhook URL) — this
+# repo is public, so secrets/private endpoints never belong in config.toml.
+config.local.toml
+
 # OS
 .DS_Store

@@ -3,21 +3,34 @@
 Real Estate data pipeline: fetch → mine → forecast → report
 
 Commands:
-  python pipeline.py fetch                   download latest source files (Realtor.com + Redfin)
-  python pipeline.py mine [--lookback N]     compute market heat scores & clusters
+  python pipeline.py fetch [--force]         change-detected download (Realtor.com + Redfin)
+  python pipeline.py fred                    fetch daily/weekly/monthly FRED macro series
+  python pipeline.py mine [--lookback N]     compute market heat scores, clusters & history snapshot
+  python pipeline.py history                 report biggest heat-score movers since last snapshot
   python pipeline.py forecast [--top N]      run Prophet for top N hot ZIPs
+  python pipeline.py backtest [--top N]      hold-out accuracy (MAPE) for the forecast model
   python pipeline.py report                  render data/dashboard.html
-  python pipeline.py all [--top N]           run fetch + mine + forecast + report
+  python pipeline.py all [--top N]           fetch + fred + (mine + forecast + backtest if changed) + report
+
+`all` is safe to run daily: fetch only re-downloads a source whose ETag/
+Last-Modified actually changed, and mine/forecast/backtest are skipped on days
+where nothing new landed. A failed run is pushed to the alert channel
+configured in config.toml's [alerts].
 
 Output files (in data/):
   market_scores.parquet      — Realtor.com heat score + cluster per ZIP
   county_scores.parquet      — county-level rollup (price levels & YoY trend)
   redfin_zip_scores.parquet  — independent Redfin-derived heat score per ZIP
   forecasts.parquet          — 12-month Prophet forecasts for top ZIPs
+  backtest.parquet           — held-out actual vs. forecast, per ZIP/month
+  score_history.parquet      — append-only heat-score snapshots for momentum
+  fred_series.parquet        — daily/weekly/monthly macro series (rates, starts, ...)
   fetch_meta.json            — per-source fetch timestamps (freshness indicator)
+  fetch_state.json           — per-source ETag/Last-Modified for change detection
   dashboard.html             — static, self-contained HTML report
 
-Configuration (weights, cluster count, source URLs, ...) lives in config.toml.
+Configuration (weights, cluster count, source URLs, FRED series, alerts, ...)
+lives in config.toml.
 """
 import argparse
 import json
@@ -29,10 +42,15 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-import requests
 from prophet import Prophet
 from sklearn.cluster import KMeans
 from sklearn.preprocessing import MinMaxScaler
+
+import backtest as backtest_mod
+import fetching
+import fred as fred_mod
+import history as history_mod
+import notify
 
 logging.basicConfig(
     level=logging.INFO,
@@ -42,11 +60,28 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 CONFIG_PATH = Path(__file__).parent / "config.toml"
+LOCAL_CONFIG_PATH = Path(__file__).parent / "config.local.toml"
 
 
-def load_config(path: Path = CONFIG_PATH) -> dict:
+def _deep_merge(base: dict, override: dict) -> dict:
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(base.get(key), dict):
+            _deep_merge(base[key], value)
+        else:
+            base[key] = value
+    return base
+
+
+def load_config(path: Path = CONFIG_PATH, local_path: Path = LOCAL_CONFIG_PATH) -> dict:
     with open(path, "rb") as f:
-        return tomllib.load(f)
+        config = tomllib.load(f)
+    # This repo is public — real secrets/private endpoints (an ntfy topic, a
+    # webhook URL) go in a gitignored config.local.toml instead of committed
+    # config.toml, merged in here when present.
+    if local_path.exists():
+        with open(local_path, "rb") as f:
+            _deep_merge(config, tomllib.load(f))
+    return config
 
 
 CONFIG = load_config()
@@ -71,7 +106,13 @@ CLUSTER_LABELS = {int(k): v for k, v in CONFIG["clusters"]["labels"].items()}
 CLUSTER_FEATURES = CONFIG["clusters"]["features"]
 
 FORECAST_CFG = CONFIG["forecast"]
+FETCH_CFG = CONFIG["fetch"]
+ALERTS_CFG = CONFIG["alerts"]
+FRED_CFG = CONFIG["fred"]
+HISTORY_CFG = CONFIG["history"]
+BACKTEST_CFG = CONFIG["backtest"]
 FETCH_META_PATH = DATA_DIR / "fetch_meta.json"
+FETCH_STATE_PATH = DATA_DIR / FETCH_CFG["state_file"]
 
 
 # ─── Helpers ────────────────────────────────────────────────────────────────
@@ -91,16 +132,8 @@ def _validate_columns(path: Path, required: list[str], sep: str = ",") -> None:
         )
 
 
-def _download(url: str, path: Path) -> None:
-    log.info(f"GET {url}")
-    r = requests.get(url, stream=True, timeout=300)
-    r.raise_for_status()
-    bytes_written = 0
-    with open(path, "wb") as f:
-        for chunk in r.iter_content(chunk_size=1 << 20):
-            f.write(chunk)
-            bytes_written += len(chunk)
-    log.info(f"  saved {path}  ({bytes_written / 1e6:.1f} MB)")
+def _validate_columns_for(path: Path, required: list[str], sep: str) -> None:
+    _validate_columns(path, required, sep=sep)
 
 
 def _record_fetch_meta(name: str) -> None:
@@ -227,15 +260,37 @@ def rank_clusters_by_heat(raw_labels: np.ndarray, index: pd.Index, heat_score: p
 
 # ─── Fetch ──────────────────────────────────────────────────────────────────
 
-def cmd_fetch(force: bool = False) -> None:
+def cmd_fetch(force: bool = False) -> list[fetching.FetchResult]:
+    """Probe every bulk source and download only the ones that actually changed.
+
+    Previously this was all-or-nothing: plain `fetch` skipped anything already on
+    disk (so a new month was never picked up) and `--force` re-pulled ~2.4 GB
+    every time. Both origins expose ETag/Last-Modified, so a ~1 KB HEAD per
+    source now decides.
+    """
+    results = []
     for name, src in SOURCES.items():
-        path: Path = src["path"]
-        if path.exists() and not force:
-            log.info(f"Skip {name} (exists — use --force to re-download)")
-            continue
-        _download(src["url"], path)
-        _validate_columns(path, src["required_columns"], sep=src["sep"])
-        _record_fetch_meta(name)
+        res = fetching.sync_source(
+            name, src, FETCH_STATE_PATH, FETCH_CFG,
+            force=force, validate=_validate_columns_for,
+        )
+        results.append(res)
+        if res.downloaded:
+            _record_fetch_meta(name)
+
+    downloaded = [r for r in results if r.downloaded]
+    total_mb = sum(r.bytes_downloaded for r in downloaded) / 1e6
+    log.info(
+        f"Fetch complete: {len(downloaded)}/{len(results)} source(s) updated"
+        + (f" ({total_mb:,.0f} MB downloaded)" if downloaded else " — everything already current")
+    )
+    return results
+
+
+def cmd_fred() -> None:
+    """Ingest FRED macro series (the only daily-cadence inputs in the project)."""
+    log.info(f"Fetching {len(FRED_CFG['series'])} FRED series …")
+    fred_mod.fetch_all(FRED_CFG, DATA_DIR)
 
 
 # ─── Mine ───────────────────────────────────────────────────────────────────
@@ -297,8 +352,41 @@ def cmd_mine(lookback_months: int = 3) -> None:
     }
     (DATA_DIR / "mine_meta.json").write_text(json.dumps(meta, indent=2))
 
+    history_mod.append_snapshot(
+        agg, df["_period"].max(), HISTORY_CFG["zip_columns"],
+        DATA_DIR / HISTORY_CFG["filename"], HISTORY_CFG["max_snapshots"],
+    )
+
     cmd_mine_counties(lookback_months=lookback_months)
     cmd_mine_redfin(lookback_months=lookback_months)
+
+
+def cmd_history() -> None:
+    """Read-only: report the biggest heat-score movers since the prior snapshot."""
+    path = DATA_DIR / HISTORY_CFG["filename"]
+    if not path.exists():
+        log.warning("No score_history.parquet yet — run 'mine' to create the first snapshot.")
+        return
+
+    hist = pd.read_parquet(path)
+    movers, prev_date, latest_date = history_mod.compute_momentum(
+        hist, HISTORY_CFG["zip_columns"], HEAT_WEIGHTS, compute_heat_scores,
+    )
+    if movers.empty:
+        only = hist["data_through"].max()
+        log.info(f"Only one snapshot on file ({only:%Y-%m-%d}) — need a second mine run on new data for momentum.")
+        return
+
+    log.info(f"Momentum {prev_date:%Y-%m-%d} → {latest_date:%Y-%m-%d} ({len(movers)} ZIPs, shared normalization basis):")
+    gainers = movers.nlargest(10, "delta")
+    losers = movers.nsmallest(10, "delta")
+    label_col = "zip_name" if "zip_name" in movers.columns else "_zip"
+    log.info("  Top gainers:")
+    for _, r in gainers.iterrows():
+        log.info(f"    +{r['delta']:5.1f}  {r['_zip']}  {r.get(label_col, '')}")
+    log.info("  Top losers:")
+    for _, r in losers.iterrows():
+        log.info(f"    {r['delta']:6.1f}  {r['_zip']}  {r.get(label_col, '')}")
 
 
 def cmd_mine_counties(lookback_months: int = 3) -> None:
@@ -438,6 +526,38 @@ def cmd_forecast(top_n: int = 30, periods: int = 12) -> None:
         log.warning("No forecasts generated.")
 
 
+# ─── Backtest ───────────────────────────────────────────────────────────────
+
+def cmd_backtest(top_n: int | None = None) -> None:
+    """Hold out the tail of each hot ZIP's history and score Prophet against it,
+    so the forecast has an accuracy number attached instead of just a line."""
+    scores_path = DATA_DIR / "market_scores.parquet"
+    if not scores_path.exists():
+        log.error("market_scores.parquet not found — run 'mine' first.")
+        sys.exit(1)
+
+    top_n = top_n or BACKTEST_CFG["default_top_n"]
+    scores = pd.read_parquet(scores_path)
+    top_zips = scores.dropna(subset=["heat_score"]).nlargest(top_n, "heat_score")["_zip"].tolist()
+    log.info(f"Backtesting {len(top_zips)} ZIPs (holdout={BACKTEST_CFG['horizon_months']}mo) …")
+
+    df = _load_zip_history()
+    results, skipped = backtest_mod.run(df, top_zips, run_prophet, BACKTEST_CFG)
+
+    if results.empty:
+        log.warning(f"No backtest results — all {len(skipped)} ZIP(s) had insufficient history.")
+        return
+
+    out = DATA_DIR / BACKTEST_CFG["filename"]
+    results.to_parquet(out, index=False)
+    summary = backtest_mod.summarize(results)
+    worst = summary.iloc[-1]
+    log.info(
+        f"Saved → {out}  ({results['_zip'].nunique()} ZIPs tested, {len(skipped)} skipped)  "
+        f"median MAPE {summary['mape_pct'].median():.1f}%  worst {worst['_zip']} ({worst['mape_pct']:.1f}%)"
+    )
+
+
 # ─── Report ─────────────────────────────────────────────────────────────────
 
 def cmd_report() -> None:
@@ -446,6 +566,66 @@ def cmd_report() -> None:
     out = DATA_DIR / "dashboard.html"
     build_dashboard(DATA_DIR, out)
     log.info(f"Saved → {out}")
+
+
+# ─── Orchestration ──────────────────────────────────────────────────────────
+
+def cmd_all(force: bool = False, lookback: int = 3, top: int | None = None,
+            periods: int | None = None) -> None:
+    """fetch → (fred) → mine/forecast/backtest (only if bulk data changed) → report.
+
+    Fetch is now change-detected (see fetching.py), so it's safe to run this
+    daily: an unchanged month costs a handful of HEAD requests, not a 2.4 GB
+    re-download. mine/forecast/backtest are comparatively expensive and their
+    output can't change unless the source data did, so they're skipped on days
+    where nothing new landed — report still re-renders daily to pick up fresh
+    FRED rates. Any failure is pushed through the configured alert channel
+    (see [alerts] in config.toml) before being re-raised, so a broken run is
+    never silent the way the poetry-PATH cron failures were for five weeks.
+    """
+    top = top if top is not None else FORECAST_CFG["default_top_n"]
+    periods = periods if periods is not None else FORECAST_CFG["default_periods"]
+    summary: dict = {}
+
+    try:
+        fetch_results = cmd_fetch(force=force)
+        bulk_names = {"zip_history", "county_history", "redfin_zip"}
+        bulk_changed = any(r.downloaded for r in fetch_results if r.name in bulk_names)
+        summary["fetched"] = [r.name for r in fetch_results if r.downloaded]
+
+        try:
+            cmd_fred()
+            summary["fred"] = "ok"
+        except Exception as exc:
+            # A flaky/discontinued FRED series must not take down the housing
+            # pipeline that everything else depends on.
+            log.warning(f"FRED fetch failed (non-fatal): {exc}")
+            summary["fred"] = f"failed: {exc}"
+
+        if bulk_changed or force:
+            cmd_mine(lookback_months=lookback)
+            cmd_forecast(top_n=top, periods=periods)
+            try:
+                cmd_backtest()
+            except Exception as exc:
+                log.warning(f"Backtest failed (non-fatal): {exc}")
+                summary["backtest"] = f"failed: {exc}"
+            else:
+                summary["backtest"] = "ok"
+            summary["mined"] = True
+        else:
+            log.info("No housing source changed — skipping mine/forecast/backtest, refreshing report only.")
+            summary["mined"] = False
+
+        cmd_report()
+        summary["reported"] = True
+
+    except Exception as exc:
+        log.exception("Pipeline run failed")
+        notify.notify_failure(ALERTS_CFG, stage="all", exc=exc)
+        raise
+    else:
+        notify.notify_success(ALERTS_CFG, summary)
 
 
 # ─── CLI ────────────────────────────────────────────────────────────────────
@@ -457,12 +637,16 @@ def main() -> None:
     )
     sub = parser.add_subparsers(dest="cmd", required=True)
 
-    p_fetch = sub.add_parser("fetch", help="Download latest CSVs from Realtor.com")
-    p_fetch.add_argument("--force", action="store_true", help="Re-download even if files exist")
+    p_fetch = sub.add_parser("fetch", help="Change-detected download of Realtor.com + Redfin sources")
+    p_fetch.add_argument("--force", action="store_true", help="Re-download even if unchanged")
 
-    p_mine = sub.add_parser("mine", help="Compute market heat scores and clusters")
+    sub.add_parser("fred", help="Fetch FRED macro series (rates, starts, permits, ...)")
+
+    p_mine = sub.add_parser("mine", help="Compute market heat scores, clusters & history snapshot")
     p_mine.add_argument("--lookback", type=int, default=3, metavar="N",
                         help="Months to average over (default 3)")
+
+    sub.add_parser("history", help="Report biggest heat-score movers since the last snapshot")
 
     p_fc = sub.add_parser("forecast", help="Run Prophet for top hot markets")
     p_fc.add_argument("--top", type=int, default=FORECAST_CFG["default_top_n"], metavar="N",
@@ -470,9 +654,13 @@ def main() -> None:
     p_fc.add_argument("--periods", type=int, default=FORECAST_CFG["default_periods"],
                       help=f"Forecast horizon in months (default {FORECAST_CFG['default_periods']})")
 
+    p_bt = sub.add_parser("backtest", help="Hold-out accuracy (MAPE) for the forecast model")
+    p_bt.add_argument("--top", type=int, default=BACKTEST_CFG["default_top_n"], metavar="N",
+                      help=f"Number of ZIPs to backtest (default {BACKTEST_CFG['default_top_n']})")
+
     sub.add_parser("report", help="Render data/dashboard.html")
 
-    p_all = sub.add_parser("all", help="Run fetch + mine + forecast + report")
+    p_all = sub.add_parser("all", help="fetch + fred + (mine + forecast + backtest if changed) + report")
     p_all.add_argument("--force", action="store_true")
     p_all.add_argument("--lookback", type=int, default=3, metavar="N")
     p_all.add_argument("--top", type=int, default=FORECAST_CFG["default_top_n"], metavar="N")
@@ -482,17 +670,20 @@ def main() -> None:
 
     if args.cmd == "fetch":
         cmd_fetch(force=args.force)
+    elif args.cmd == "fred":
+        cmd_fred()
     elif args.cmd == "mine":
         cmd_mine(lookback_months=args.lookback)
+    elif args.cmd == "history":
+        cmd_history()
     elif args.cmd == "forecast":
         cmd_forecast(top_n=args.top, periods=args.periods)
+    elif args.cmd == "backtest":
+        cmd_backtest(top_n=args.top)
     elif args.cmd == "report":
         cmd_report()
     elif args.cmd == "all":
-        cmd_fetch(force=args.force)
-        cmd_mine(lookback_months=args.lookback)
-        cmd_forecast(top_n=args.top, periods=args.periods)
-        cmd_report()
+        cmd_all(force=args.force, lookback=args.lookback, top=args.top, periods=args.periods)
 
 
 if __name__ == "__main__":
