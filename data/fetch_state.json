@@ -1,9 +1,9 @@
 {
   "county_history": {
-    "content_length": "101386516",
-    "etag": "\"a60f32e2eb598dddb218c1dda9de0d52-6\"",
-    "fetched_at": "2026-09-02T13:50:35.043329+00:00",
-    "last_modified": "Tue, 04 Aug 2026 15:54:11 GMT"
+    "content_length": "102251758",
+    "etag": "\"e206363c9c92a457f35e375968333eea-6\"",
+    "fetched_at": "2026-09-03T05:40:49.878713+00:00",
+    "last_modified": "Wed, 02 Sep 2026 19:08:10 GMT"
   },
   "redfin_zip": {
     "content_length": "1548403907",
@@ -12,15 +12,15 @@
     "last_modified": "Tue, 02 Jun 2026 18:19:04 GMT"
   },
   "zip_current": {
-    "content_length": "7431734",
-    "etag": "\"e28b7bf4b7787f9635d3b90b11c8d8e7\"",
-    "fetched_at": "2026-09-02T13:50:29.307606+00:00",
-    "last_modified": "Tue, 04 Aug 2026 15:54:17 GMT"
+    "content_length": "7393242",
+    "etag": "\"5e14f2573e0defa94a9e56a357a37761\"",
+    "fetched_at": "2026-09-03T05:40:44.465797+00:00",
+    "last_modified": "Wed, 02 Sep 2026 19:08:12 GMT"
   },
   "zip_history": {
-    "content_length": "822067599",
-    "etag": "\"8cc18e8bdfae68d1fe310d3581916331-48\"",
-    "fetched_at": "2026-09-02T13:50:27.941383+00:00",
-    "last_modified": "Tue, 04 Aug 2026 15:54:12 GMT"
+    "content_length": "829650423",
+    "etag": "\"0436aaedd9d54d356aea18ca6f56947e-49\"",
+    "fetched_at": "2026-09-03T05:40:43.276029+00:00",
+    "last_modified": "Wed, 02 Sep 2026 19:08:10 GMT"
   }
 }

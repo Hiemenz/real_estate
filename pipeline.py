@@ -5,17 +5,20 @@ Real Estate data pipeline: fetch → mine → forecast → report
 Commands:
   python pipeline.py fetch [--force]         change-detected download (Realtor.com + Redfin)
   python pipeline.py fred                    fetch daily/weekly/monthly FRED macro series
+  python pipeline.py fhfa                    fetch FHFA House Price Index (state + metro)
+  python pipeline.py census                  fetch Census ACS demographics per ZIP (annual, needs an API key — run manually)
   python pipeline.py mine [--lookback N]     compute market heat scores, clusters & history snapshot
   python pipeline.py history                 report biggest heat-score movers since last snapshot
   python pipeline.py forecast [--top N]      run Prophet for top N hot ZIPs
   python pipeline.py backtest [--top N]      hold-out accuracy (MAPE) for the forecast model
   python pipeline.py report                  render data/dashboard.html
-  python pipeline.py all [--top N]           fetch + fred + (mine + forecast + backtest if changed) + report
+  python pipeline.py all [--top N]           fetch + fred + fhfa + (mine + forecast + backtest if changed) + report
 
 `all` is safe to run daily: fetch only re-downloads a source whose ETag/
 Last-Modified actually changed, and mine/forecast/backtest are skipped on days
 where nothing new landed. A failed run is pushed to the alert channel
-configured in config.toml's [alerts].
+configured in config.toml's [alerts]. `census` is intentionally not part of
+`all` — ACS5 only updates annually and requires an API key.
 
 Output files (in data/):
   market_scores.parquet      — Realtor.com heat score + cluster per ZIP
@@ -25,6 +28,8 @@ Output files (in data/):
   backtest.parquet           — held-out actual vs. forecast, per ZIP/month
   score_history.parquet      — append-only heat-score snapshots for momentum
   fred_series.parquet        — daily/weekly/monthly macro series (rates, starts, ...)
+  fhfa_hpi.parquet           — FHFA repeat-sales price index (state + metro)
+  census_acs.parquet         — Census ACS demographics per ZIP (run `pipeline.py census` manually)
   fetch_meta.json            — per-source fetch timestamps (freshness indicator)
   fetch_state.json           — per-source ETag/Last-Modified for change detection
   dashboard.html             — static, self-contained HTML report
@@ -47,7 +52,9 @@ from sklearn.cluster import KMeans
 from sklearn.preprocessing import MinMaxScaler
 
 import backtest as backtest_mod
+import census as census_mod
 import fetching
+import fhfa as fhfa_mod
 import fred as fred_mod
 import history as history_mod
 import notify
@@ -109,6 +116,8 @@ FORECAST_CFG = CONFIG["forecast"]
 FETCH_CFG = CONFIG["fetch"]
 ALERTS_CFG = CONFIG["alerts"]
 FRED_CFG = CONFIG["fred"]
+FHFA_CFG = CONFIG["fhfa"]
+CENSUS_CFG = CONFIG["census"]
 HISTORY_CFG = CONFIG["history"]
 BACKTEST_CFG = CONFIG["backtest"]
 FETCH_META_PATH = DATA_DIR / "fetch_meta.json"
@@ -291,6 +300,29 @@ def cmd_fred() -> None:
     """Ingest FRED macro series (the only daily-cadence inputs in the project)."""
     log.info(f"Fetching {len(FRED_CFG['series'])} FRED series …")
     fred_mod.fetch_all(FRED_CFG, DATA_DIR)
+
+
+def cmd_fhfa() -> None:
+    """Ingest FHFA's repeat-sales House Price Index — a third, independent
+    price signal alongside Realtor.com and Redfin (state + metro grain)."""
+    fhfa_mod.fetch_all(FHFA_CFG, DATA_DIR)
+
+
+def cmd_census() -> None:
+    """Ingest Census ACS demographics per ZIP. Standalone/manual: ACS5 only
+    updates annually, so this isn't part of the daily `all` gate."""
+    if not CENSUS_CFG.get("api_key", "").strip():
+        log.warning(census_mod.MISSING_KEY_MSG)
+        return
+
+    scores_path = DATA_DIR / "market_scores.parquet"
+    if not scores_path.exists():
+        log.error("market_scores.parquet not found — run 'mine' first.")
+        sys.exit(1)
+
+    zips = pd.read_parquet(scores_path)["_zip"].tolist()
+    log.info(f"Fetching Census ACS demographics for {len(zips):,} ZIPs …")
+    census_mod.fetch_and_save(CENSUS_CFG, zips, DATA_DIR)
 
 
 # ─── Mine ───────────────────────────────────────────────────────────────────
@@ -602,6 +634,13 @@ def cmd_all(force: bool = False, lookback: int = 3, top: int | None = None,
             log.warning(f"FRED fetch failed (non-fatal): {exc}")
             summary["fred"] = f"failed: {exc}"
 
+        try:
+            cmd_fhfa()
+            summary["fhfa"] = "ok"
+        except Exception as exc:
+            log.warning(f"FHFA fetch failed (non-fatal): {exc}")
+            summary["fhfa"] = f"failed: {exc}"
+
         if bulk_changed or force:
             cmd_mine(lookback_months=lookback)
             cmd_forecast(top_n=top, periods=periods)
@@ -641,6 +680,8 @@ def main() -> None:
     p_fetch.add_argument("--force", action="store_true", help="Re-download even if unchanged")
 
     sub.add_parser("fred", help="Fetch FRED macro series (rates, starts, permits, ...)")
+    sub.add_parser("fhfa", help="Fetch FHFA House Price Index (state + metro)")
+    sub.add_parser("census", help="Fetch Census ACS demographics per ZIP (annual — requires an API key, run manually)")
 
     p_mine = sub.add_parser("mine", help="Compute market heat scores, clusters & history snapshot")
     p_mine.add_argument("--lookback", type=int, default=3, metavar="N",
@@ -672,6 +713,10 @@ def main() -> None:
         cmd_fetch(force=args.force)
     elif args.cmd == "fred":
         cmd_fred()
+    elif args.cmd == "fhfa":
+        cmd_fhfa()
+    elif args.cmd == "census":
+        cmd_census()
     elif args.cmd == "mine":
         cmd_mine(lookback_months=args.lookback)
     elif args.cmd == "history":

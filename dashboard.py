@@ -17,6 +17,7 @@ from pathlib import Path
 
 import pandas as pd
 
+import fhfa as fhfa_mod
 import fred as fred_mod
 import history as history_mod
 
@@ -503,6 +504,11 @@ def build_dashboard(data_dir: Path, out_path: Path) -> None:
         from backtest import summarize as summarize_backtest
         backtest_summary = summarize_backtest(pd.read_parquet(backtest_path))
 
+    fhfa_movers = None
+    fhfa_path = data_dir / "fhfa_hpi.parquet"
+    if fhfa_path.exists():
+        fhfa_movers = fhfa_mod.latest_metro_movers(pd.read_parquet(fhfa_path))
+
     scored = scores.dropna(subset=["heat_score"]).copy()
     scored["state"] = scored["zip_name"].fillna("").apply(
         lambda s: s.split(", ")[-1].strip() if ", " in s else None
@@ -629,6 +635,30 @@ def build_dashboard(data_dir: Path, out_path: Path) -> None:
       {bt_table}
     </section>"""
 
+    # ── FHFA metro movers (independent cross-check) ────────────────────────
+    fhfa_html = ""
+    if fhfa_movers is not None and len(fhfa_movers):
+        fhfa_rows = fhfa_movers.to_dict("records")
+        for r in fhfa_rows:
+            r["label"] = r["place"]
+
+        def fhfa_tip(r):
+            return f"{r['place']} · FHFA index {r['hpi']:.1f} · {r['yoy_pct']:+.1f}% YoY"
+
+        fhfa_chart = hbar_chart(
+            fhfa_rows, value_key="yoy_pct", label_key="label",
+            tooltip_fn=fhfa_tip, color=CATEGORICAL["light"][3],
+            domain_max=max(15.0, fhfa_movers["yoy_pct"].max() * 1.1),
+            chart_id="fhfa-movers",
+        )
+        latest_q = fhfa_movers["period"].iloc[0]
+        fhfa_html = f"""
+    <section>
+      <h2>Fastest-appreciating metros — FHFA index</h2>
+      <p class="section-sub">YoY % change, repeat-sales index (Fannie/Freddie mortgage data) as of Q{((latest_q.month - 1) // 3) + 1} {latest_q.year} — a methodologically independent check on the listing/sale-price signals above, since it comes from conforming-mortgage transactions rather than listings or closings.</p>
+      {fhfa_chart}
+    </section>"""
+
     # ── County section ─────────────────────────────────────────────────────
     county_section = ""
     if county_scores is not None:
@@ -727,6 +757,7 @@ def build_dashboard(data_dir: Path, out_path: Path) -> None:
   {cluster_html}
   {forecast_html}
   {backtest_html}
+  {fhfa_html}
   {county_html}
 
   <section>

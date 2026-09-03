@@ -136,6 +136,44 @@ CPIAUCSL     = { label = "CPI (All Urban)",             freq = "monthly",   unit
 MSPUS        = { label = "Median Sales Price (US)",     freq = "quarterly", units = "usd" }
 RRVRUSQ156N  = { label = "Rental Vacancy Rate",         freq = "quarterly", units = "percent" }
 
+# ─── FHFA House Price Index ────────────────────────────────────────────────
+# A third, independently-computed price signal: repeat-sales index built from
+# Fannie/Freddie conforming-mortgage data, methodologically distinct from
+# Realtor's listing prices and Redfin's closed-sale prices. No ZIP-level file
+# is published — state and metro (MSA) are the finest official grain. Free
+# CSV, no key, but the CDN 404s a bare requests User-Agent (see fhfa.py).
+[fhfa]
+state_url = "https://www.fhfa.gov/hpi/download/quarterly_datasets/hpi_at_state.csv"
+metro_url = "https://www.fhfa.gov/hpi/download/quarterly_datasets/hpi_at_metro.csv"
+filename = "fhfa_hpi.parquet"
+timeout = 60
+
+# ─── Census ACS demographics (requires a free API key) ────────────────────
+# Median household income, rent burden, homeownership rate, population — the
+# economic context behind why a ZIP is hot, not just that it is. ACS 5-year
+# estimates only update annually, so unlike fetch/fred this is a standalone
+# `pipeline.py census` command, not part of the daily `all` gate. Requires a
+# free key (instant signup, no cost): https://api.census.gov/data/key_signup.html
+# — set it in config.local.toml (gitignored), never here.
+[census]
+base_url = "https://api.census.gov/data"
+year = 2023
+dataset = "acs/acs5"
+api_key = ""
+filename = "census_acs.parquet"
+# Census's ZCTA geography has no wildcard — every request names its ZCTAs
+# explicitly, so ZIPs are queried in batches rather than one request each.
+batch_size = 50
+timeout = 30
+
+[census.variables]
+B01003_001E = "population"
+B19013_001E = "median_household_income"
+B25064_001E = "median_gross_rent"
+B25071_001E = "rent_burden_pct"
+B25003_001E = "occupied_housing_units"
+B25003_002E = "owner_occupied_units"
+
 # ─── Score history ─────────────────────────────────────────────────────────
 # Append-only snapshots so heat can be tracked over time and momentum derived.
 #
