@@ -1,26 +1,26 @@
 {
   "county_history": {
-    "content_length": "102251758",
-    "etag": "\"e206363c9c92a457f35e375968333eea-6\"",
-    "fetched_at": "2026-09-27T13:36:32.943190+00:00",
-    "last_modified": "Thu, 03 Sep 2026 13:23:18 GMT"
+    "content_length": "103158368",
+    "etag": "\"3543252566693a530174ac0e38a68409-7\"",
+    "fetched_at": "2026-10-04T13:46:59.311896+00:00",
+    "last_modified": "Wed, 30 Sep 2026 14:41:31 GMT"
   },
   "redfin_zip": {
     "content_length": "1548403907",
     "etag": "\"c173c1aa75ba093b643a05079085b333\"",
-    "fetched_at": "2026-09-27T13:36:48.632483+00:00",
+    "fetched_at": "2026-10-04T13:47:22.049296+00:00",
     "last_modified": "Tue, 02 Jun 2026 18:19:04 GMT"
   },
   "zip_current": {
-    "content_length": "7393242",
-    "etag": "\"5e14f2573e0defa94a9e56a357a37761\"",
-    "fetched_at": "2026-09-27T13:36:31.278975+00:00",
-    "last_modified": "Thu, 03 Sep 2026 13:24:21 GMT"
+    "content_length": "7408163",
+    "etag": "\"edd55feaa9b9761b8dfd59963f965733\"",
+    "fetched_at": "2026-10-04T13:46:56.572037+00:00",
+    "last_modified": "Wed, 30 Sep 2026 14:41:44 GMT"
   },
   "zip_history": {
-    "content_length": "829650423",
-    "etag": "\"0436aaedd9d54d356aea18ca6f56947e-49\"",
-    "fetched_at": "2026-09-27T13:36:30.697042+00:00",
-    "last_modified": "Fri, 04 Sep 2026 16:36:54 GMT"
+    "content_length": "837115321",
+    "etag": "\"09af041cc1db81530d67026a1d7f7055-49\"",
+    "fetched_at": "2026-10-04T13:46:55.459030+00:00",
+    "last_modified": "Wed, 30 Sep 2026 14:41:31 GMT"
   }
 }
