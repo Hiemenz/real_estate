@@ -10,7 +10,7 @@ LOCKFILE="/tmp/real_estate_pipeline.lock"
 LOGFILE="data/pipeline.log"
 
 # Invoke the in-project venv directly. cron's non-interactive PATH does not
-# include ~/.local/bin, so calling `poetry` here fails with "command not found"
+# include ~/.local/bin, so calling `uv` here fails with "command not found"
 # and the whole run dies before it downloads anything.
 PYTHON="$PROJECT_DIR/.venv/bin/python"
 

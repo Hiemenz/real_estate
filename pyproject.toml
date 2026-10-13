@@ -8,20 +8,22 @@ authors = [
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
-    "numpy (>=2.3.2,<3.0.0)",
-    "pandas (>=2.3.2,<3.0.0)",
-    "streamlit (>=1.49.1,<2.0.0)",
-    "altair (>=5.5.0,<6.0.0)",
-    "prophet (>=1.1.7,<2.0.0)",
-    "scikit-learn (>=1.5.0,<2.0.0)",
-    "pyarrow (>=18.0.0)",
-    "requests (>=2.32.0,<3.0.0)"
+    "numpy>=2.3.2,<3.0.0",
+    "pandas>=2.3.2,<3.0.0",
+    "streamlit>=1.49.1,<2.0.0",
+    "altair>=5.5.0,<6.0.0",
+    "prophet>=1.1.7,<2.0.0",
+    "scikit-learn>=1.5.0,<2.0.0",
+    "pyarrow>=18.0.0",
+    "requests>=2.32.0,<3.0.0"
 ]
 
 
-[tool.poetry.group.dev.dependencies]
-pytest = "^9.1"
+[dependency-groups]
+dev = ["pytest>=9.1,<10"]
 
-[build-system]
-requires = ["poetry-core>=2.0.0,<3.0.0"]
-build-backend = "poetry.core.masonry.api"
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
