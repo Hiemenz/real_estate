@@ -4,9 +4,6 @@ __pycache__/
 .venv/
 *.egg-info/
 
-# Poetry
-poetry.toml
-
 # Claude Code local settings
 .claude/settings.local.json
 

@@ -720,7 +720,7 @@ def build_dashboard(data_dir: Path, out_path: Path) -> None:
     </section>""" if forecast_section else """
     <section>
       <h2>Forecast comparison</h2>
-      <p class="section-sub">Run <code>poetry run python pipeline.py forecast</code> to populate this section.</p>
+      <p class="section-sub">Run <code>uv run python pipeline.py forecast</code> to populate this section.</p>
     </section>"""
     )
 

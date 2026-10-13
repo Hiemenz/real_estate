@@ -43,10 +43,10 @@ parameters are all tunable in `config.toml` without touching the code.
 
 ## Setup
 
-Requires Python 3.13+ and [Poetry](https://python-poetry.org/).
+Requires Python 3.13+ and [uv](https://docs.astral.sh/uv/).
 
 ```bash
-poetry install
+uv sync
 ```
 
 ## Usage
@@ -54,16 +54,16 @@ poetry install
 Run the pipeline (outputs land in `data/`):
 
 ```bash
-poetry run python pipeline.py fetch [--force]        # change-detected download (Realtor.com + Redfin)
-poetry run python pipeline.py fred                   # fetch FRED macro series
-poetry run python pipeline.py fhfa                    # fetch FHFA House Price Index (state + metro)
-poetry run python pipeline.py census                  # fetch Census ACS demographics (annual, needs an API key — run manually)
-poetry run python pipeline.py mine [--lookback N]     # heat scores, clusters, county/Redfin rollups, history snapshot
-poetry run python pipeline.py history                 # report biggest heat-score movers since last snapshot
-poetry run python pipeline.py forecast [--top N]      # Prophet forecasts for top N ZIPs
-poetry run python pipeline.py backtest [--top N]      # held-out forecast accuracy (MAPE)
-poetry run python pipeline.py report                  # render data/dashboard.html
-poetry run python pipeline.py all [--top N]           # fetch + fred + fhfa + (mine+forecast+backtest if changed) + report
+uv run python pipeline.py fetch [--force]        # change-detected download (Realtor.com + Redfin)
+uv run python pipeline.py fred                   # fetch FRED macro series
+uv run python pipeline.py fhfa                    # fetch FHFA House Price Index (state + metro)
+uv run python pipeline.py census                  # fetch Census ACS demographics (annual, needs an API key — run manually)
+uv run python pipeline.py mine [--lookback N]     # heat scores, clusters, county/Redfin rollups, history snapshot
+uv run python pipeline.py history                 # report biggest heat-score movers since last snapshot
+uv run python pipeline.py forecast [--top N]      # Prophet forecasts for top N ZIPs
+uv run python pipeline.py backtest [--top N]      # held-out forecast accuracy (MAPE)
+uv run python pipeline.py report                  # render data/dashboard.html
+uv run python pipeline.py all [--top N]           # fetch + fred + fhfa + (mine+forecast+backtest if changed) + report
 ```
 
 `all` is safe to run daily: `fetch` only re-downloads a source whose
@@ -83,13 +83,13 @@ census` logs a warning naming the signup URL and skips cleanly.
 Launch the interactive dashboard:
 
 ```bash
-poetry run streamlit run streamlit_app.py
+uv run streamlit run streamlit_app.py
 ```
 
 For a recurring refresh, `scripts/daily_update.sh` runs `pipeline.py all`
 under a flock (already installed as a daily cron job on this machine —
 `crontab -l` to check). It invokes the project's `.venv/bin/python` directly
-rather than `poetry`, since cron's non-interactive `PATH` doesn't include
+rather than `uv`, since cron's non-interactive `PATH` doesn't include
 `~/.local/bin`.
 
 ## Output files (in `data/`)
@@ -137,7 +137,7 @@ too (`notify_on_success`).
 ## Testing
 
 ```bash
-poetry run pytest
+uv run pytest
 ```
 
 Covers the pure logic: heat-score weighting/winsorizing and cluster ranking

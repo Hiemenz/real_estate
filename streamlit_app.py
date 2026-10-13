@@ -88,7 +88,7 @@ def _fetch_freshness() -> list[str]:
 
 def _pipeline_hint(cmd: str) -> None:
     st.info(
-        f"Run the pipeline first:  `poetry run python pipeline.py {cmd}`  "
+        f"Run the pipeline first:  `uv run python pipeline.py {cmd}`  "
         f"then refresh this page.",
         icon="ℹ️",
     )
@@ -99,7 +99,7 @@ def _pipeline_hint(cmd: str) -> None:
 zip_history_path = str(DATA_DIR / "RDC_Inventory_Core_Metrics_Zip_History.csv")
 if not Path(zip_history_path).exists():
     st.error("data/RDC_Inventory_Core_Metrics_Zip_History.csv not found.")
-    st.code("poetry run python pipeline.py fetch")
+    st.code("uv run python pipeline.py fetch")
     st.stop()
 
 with st.spinner("Loading ZIP history …"):
@@ -675,7 +675,7 @@ with tab4:
     county_history = load_county_history(county_history_path)
     if county_history is None:
         st.info(
-            "County history CSV not found — run `poetry run python pipeline.py fetch` "
+            "County history CSV not found — run `uv run python pipeline.py fetch` "
             "to enable the trend chart below."
         )
     else:
