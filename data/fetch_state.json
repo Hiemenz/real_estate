@@ -2,25 +2,25 @@
   "county_history": {
     "content_length": "103158368",
     "etag": "\"3543252566693a530174ac0e38a68409-7\"",
-    "fetched_at": "2026-10-18T12:29:29.096173+00:00",
+    "fetched_at": "2026-10-25T13:00:33.900209+00:00",
     "last_modified": "Wed, 30 Sep 2026 14:41:31 GMT"
   },
   "redfin_zip": {
     "content_length": "1548403907",
     "etag": "\"c173c1aa75ba093b643a05079085b333\"",
-    "fetched_at": "2026-10-18T12:29:55.260580+00:00",
+    "fetched_at": "2026-10-25T13:00:53.543351+00:00",
     "last_modified": "Tue, 02 Jun 2026 18:19:04 GMT"
   },
   "zip_current": {
     "content_length": "7408163",
     "etag": "\"edd55feaa9b9761b8dfd59963f965733\"",
-    "fetched_at": "2026-10-18T12:29:26.404964+00:00",
+    "fetched_at": "2026-10-25T13:00:31.788554+00:00",
     "last_modified": "Wed, 30 Sep 2026 14:41:44 GMT"
   },
   "zip_history": {
     "content_length": "837115321",
     "etag": "\"09af041cc1db81530d67026a1d7f7055-49\"",
-    "fetched_at": "2026-10-18T12:29:25.195075+00:00",
+    "fetched_at": "2026-10-25T13:00:30.895104+00:00",
     "last_modified": "Wed, 30 Sep 2026 14:41:31 GMT"
   }
 }
